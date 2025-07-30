@@ -158,18 +158,6 @@
           return;
         }
 
-        const now = new Date();
-        const gameTime = new Date();
-        gameTime.setHours(18, 0, 0, 0);
-
-        const cutoff = new Date(gameTime);
-        cutoff.setDate(cutoff.getDate() - 1);
-
-        if (now >= cutoff) {
-          alert("You can't cancel within 24 hours of the game.");
-          return;
-        }
-
         db.collection("players")
           .where("identifier", "==", identifier)
           .get()
