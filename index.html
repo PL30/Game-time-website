@@ -16,18 +16,19 @@
 
   <section class="p-6">
     <h2 class="text-xl font-semibold mb-4">Upcoming Games</h2>
+
+    <!-- Single game card (you can duplicate this pattern later) -->
     <div class="grid gap-4 md:grid-cols-2">
       <div class="bg-white p-4 rounded-xl shadow">
-        <h3 class="text-lg font-bold">7v7 @ Töölö | Wed, 6pm</h3>
-        <p class="text-sm mt-1 text-gray-600">Töölön Pallokenttä 1</p>
-        <p class="text-sm mt-1">Players Registered: <span class="font-semibold" id="registered-count">0</span>/14</p>
+        <h3 id="game-title" class="text-lg font-bold">7v7 @ Töölö | Wed, 6pm</h3>
+        <p id="game-venue" class="text-sm mt-1 text-gray-600">Töölön Pallokenttä 1</p>
+        <p class="text-sm mt-1">
+          Players Registered:
+          <span class="font-semibold" id="registered-count">0</span>/<span id="capacity">14</span>
+        </p>
         <p class="text-sm mt-1">Status: <span class="font-semibold" id="game-status">Pending</span></p>
 
         <div class="mt-3 space-y-2">
-          <select id="game-select" class="p-2 border rounded w-full mb-2">
-            <option value="toolo-wed-6pm">7v7 @ Töölö | Wed, 6pm</option>
-            <option value="kallio-thu-7pm">7v7 @ Kallio | Thu, 7pm (Coming Soon)</option>
-          </select>
           <input type="text" id="player-name" placeholder="First Name" class="p-2 border rounded w-full" />
           <input type="text" id="player-identifier" placeholder="Email or Phone" class="p-2 border rounded w-full" />
           <input type="text" id="player-position" placeholder="Position (e.g. Midfielder)" class="p-2 border rounded w-full" />
@@ -40,13 +41,20 @@
           <button onclick="unreserveSpot()" class="bg-red-500 text-white py-2 w-full rounded">Cancel My Spot</button>
         </div>
 
-        <div class="mt-4">
-          <h4 class="font-semibold mb-2">Registered Players:</h4>
-          <ul id="registered-names" class="list-disc list-inside text-sm"></ul>
+        <p id="free-note" class="text-sm text-green-700 mt-3 hidden">
+          Free pilot game – no payment required.
+        </p>
+
+        <div id="pay-cta" class="mt-4 hidden">
+          <a id="pay-btn" href="#" class="inline-block bg-blue-600 text-white px-4 py-2 rounded" target="_blank">
+            Pay
+          </a>
+          <p class="text-xs text-gray-500 mt-1">Payment opens in a new tab.</p>
         </div>
 
         <div class="mt-4">
-          <a href="#" class="inline-block bg-green-500 text-white px-4 py-2 rounded" target="_blank">Pay with Stripe (Coming Soon)</a>
+          <h4 class="font-semibold mb-2">Registered Players:</h4>
+          <ul id="registered-names" class="list-disc list-inside text-sm"></ul>
         </div>
 
         <div class="mt-4 text-sm">
@@ -56,8 +64,16 @@
             <button onclick="verifyAdmin()" class="bg-gray-700 text-white px-4 py-2 rounded w-full">Submit</button>
             <div id="admin-panel" style="display:none;">
               <h4 class="font-semibold mt-4">Admin Controls</h4>
-              <button onclick="resetGame()" class="mt-2 bg-gray-700 text-white px-4 py-2 rounded">Reset Game</button>
-              <p class="mt-2 text-sm text-gray-600">WhatsApp: <a href="https://wa.me/358401234567" class="text-blue-500 underline" target="_blank">Message Us</a></p>
+              <button onclick="resetGame()" class="mt-2 bg-gray-700 text-white px-4 py-2 rounded">Reset Game (clear players)</button>
+
+              <div id="admin-payment-block" class="mt-4">
+                <p class="text-sm">Payments enabled: <span id="payments-flag">false</span></p>
+                <button onclick="togglePayments()" class="bg-blue-600 text-white px-4 py-2 rounded mt-2">Toggle Payments</button>
+              </div>
+
+              <div class="mt-4 text-sm text-gray-600">
+                WhatsApp: <a href="https://wa.me/358401234567" class="text-blue-500 underline" target="_blank">Message Us</a>
+              </div>
             </div>
           </div>
         </div>
@@ -103,16 +119,31 @@
       firebase.initializeApp(firebaseConfig);
       const db = firebase.firestore();
 
+      // ---- CONFIG ----
+      const gameId = 'toolo-wed-6pm'; // this card's game
+      let appSettings = { paymentsEnabled: false };
+      let gameMeta = {
+        title: "7v7 @ Töölö | Wed, 6pm",
+        venue: "Töölön Pallokenttä 1",
+        capacity: 14,
+        requiresPayment: false,
+        price: 5,
+        currency: "EUR",
+        paymentLink: ""
+      };
+
       const registeredCount = document.getElementById('registered-count');
       const registeredNames = document.getElementById('registered-names');
       const status = document.getElementById('game-status');
-      const maxPlayers = 14;
-
-      function getSelectedGameId() {
-        return document.getElementById("game-select").value;
-      }
+      const capEl = document.getElementById('capacity');
+      const titleEl = document.getElementById('game-title');
+      const venueEl = document.getElementById('game-venue');
+      const payCta = document.getElementById('pay-cta');
+      const payBtn = document.getElementById('pay-btn');
+      const freeNote = document.getElementById('free-note');
 
       function updateStatus(count) {
+        const min = Math.min(gameMeta.capacity || 14, 14); // default safety
         if (count >= 12) {
           status.textContent = "Game Confirmed!";
         } else {
@@ -120,16 +151,47 @@
         }
       }
 
-      function updatePlayerList() {
-        const gameId = getSelectedGameId();
+      async function loadSettingsAndGame() {
+        // settings/app
+        try {
+          const sdoc = await db.collection('settings').doc('app').get();
+          if (sdoc.exists) appSettings = sdoc.data();
+        } catch (e) { console.warn('No settings/app yet, defaulting...', e); }
+
+        // games/{gameId}
+        try {
+          const gdoc = await db.collection('games').doc(gameId).get();
+          if (gdoc.exists) gameMeta = Object.assign(gameMeta, gdoc.data());
+        } catch (e) { console.warn('No games doc yet, using defaults', e); }
+
+        // reflect meta
+        titleEl.textContent = gameMeta.title || titleEl.textContent;
+        venueEl.textContent = gameMeta.venue || venueEl.textContent;
+        capEl.textContent = gameMeta.capacity || 14;
+
+        // payment UI
+        const showPaid = !!(appSettings.paymentsEnabled && gameMeta.requiresPayment && gameMeta.paymentLink);
+        if (showPaid) {
+          payCta.classList.remove('hidden');
+          payBtn.textContent = `Pay €${gameMeta.price || ''}`;
+          payBtn.href = gameMeta.paymentLink;
+          freeNote.classList.add('hidden');
+        } else {
+          payCta.classList.add('hidden');
+          freeNote.classList.remove('hidden');
+        }
+      }
+
+      function subscribePlayersList() {
         db.collection("players")
           .where("gameId", "==", gameId)
           .onSnapshot(snapshot => {
             registeredNames.innerHTML = '';
             let count = 0;
             snapshot.forEach(doc => {
+              const data = doc.data();
               const li = document.createElement('li');
-              li.textContent = doc.data().name;
+              li.textContent = data.name || 'Player';
               registeredNames.appendChild(li);
               count++;
             });
@@ -138,87 +200,109 @@
           });
       }
 
-      document.getElementById("game-select").addEventListener("change", updatePlayerList);
-
-      window.reserveSpot = function () {
+      // --- Actions ---
+      window.reserveSpot = async function () {
         const name = document.getElementById('player-name').value.trim();
         const identifier = document.getElementById('player-identifier').value.trim();
         const position = document.getElementById('player-position').value.trim();
         const experience = document.getElementById('player-experience').value;
-        const gameId = getSelectedGameId();
 
         if (!name || !identifier) {
           alert("Please enter your name and email/phone.");
           return;
         }
 
-        db.collection("players")
-          .where("gameId", "==", gameId)
-          .get()
-          .then(snapshot => {
-            if (snapshot.size >= maxPlayers) {
-              alert("Game is full. Join the waitlist!");
-            } else {
-              db.collection("players").add({ name, identifier, position, experience, gameId })
-                .then(() => {
-                  alert("Spot reserved! We'll send confirmation soon.");
-                });
-            }
-          });
+        const capacity = Number(gameMeta.capacity || 14);
+
+        // Check capacity
+        const current = await db.collection("players").where("gameId", "==", gameId).get();
+        if (current.size >= capacity) {
+          alert("Game is full. Join the waitlist!");
+          return;
+        }
+
+        await db.collection("players").add({ name, identifier, position, experience, gameId });
+
+        // Decide what to show next
+        if (appSettings.paymentsEnabled && gameMeta.requiresPayment && gameMeta.paymentLink) {
+          alert("Spot held — please complete payment on the next page.");
+          window.open(gameMeta.paymentLink, "_blank");
+        } else {
+          alert("Spot reserved! This pilot game is free — see you on the pitch.");
+        }
+
+        // clear inputs (optional)
+        document.getElementById('player-name').value = '';
+        document.getElementById('player-identifier').value = '';
+        document.getElementById('player-position').value = '';
+        document.getElementById('player-experience').value = 'Beginner';
       }
 
-      window.unreserveSpot = function () {
+      window.unreserveSpot = async function () {
         const identifier = document.getElementById('player-identifier').value.trim();
-        const gameId = getSelectedGameId();
         if (!identifier) {
           alert("Please enter your email or phone number.");
           return;
         }
 
-        db.collection("players")
+        const snap = await db.collection("players")
           .where("identifier", "==", identifier)
           .where("gameId", "==", gameId)
-          .get()
-          .then(snapshot => {
-            if (snapshot.empty) {
-              alert("No reservation found with that email/phone for this game.");
-              return;
-            }
+          .get();
 
-            snapshot.forEach(doc => {
-              db.collection("players").doc(doc.id).delete();
-            });
+        if (snap.empty) {
+          alert("No reservation found with that email/phone for this game.");
+          return;
+        }
 
-            alert("Your spot has been canceled.");
-          });
+        const batch = db.batch();
+        snap.forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+        alert("Your spot has been canceled.");
       }
 
-      window.resetGame = function () {
-        const gameId = getSelectedGameId();
-        db.collection("players")
-          .where("gameId", "==", gameId)
-          .get()
-          .then(snapshot => {
-            snapshot.forEach(doc => db.collection("players").doc(doc.id).delete());
-          });
+      window.resetGame = async function () {
+        const snap = await db.collection("players").where("gameId", "==", gameId).get();
+        const batch = db.batch();
+        snap.forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+        alert("Cleared all reservations for this game.");
       }
 
       window.showAdminLogin = function () {
         document.getElementById('admin-controls').style.display = 'block';
       }
 
-      window.verifyAdmin = function () {
+      window.verifyAdmin = async function () {
         const password = document.getElementById('admin-password').value;
         if (password === 'ColePalmerCWC') {
           document.getElementById('admin-panel').style.display = 'block';
+          // read current flag
+          const sdoc = await db.collection('settings').doc('app').get();
+          const flag = sdoc.exists && sdoc.data().paymentsEnabled ? 'true' : 'false';
+          document.getElementById('payments-flag').textContent = flag;
         } else {
           alert('Incorrect password.');
         }
       }
 
-      updatePlayerList();
+      window.togglePayments = async function () {
+        const ref = db.collection('settings').doc('app');
+        const sdoc = await ref.get();
+        const current = sdoc.exists && sdoc.data().paymentsEnabled ? true : false;
+        await ref.set({
+          paymentsEnabled: !current,
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        document.getElementById('payments-flag').textContent = (!current).toString();
+        await loadSettingsAndGame();
+        alert(`Payments ${!current ? 'ENABLED' : 'DISABLED'}.`);
+      }
+
+      // Boot
+      loadSettingsAndGame();
+      subscribePlayersList();
     });
   </script>
 </body>
 </html>
-
